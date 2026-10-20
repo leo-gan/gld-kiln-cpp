@@ -4,6 +4,8 @@ temp/
 !.env.example
 site/
 build/
+__pycache__/
+*.pyc
 *.o
 *.a
 *.user
