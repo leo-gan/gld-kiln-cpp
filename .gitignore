@@ -1,0 +1,13 @@
+temp/
+.env
+.env.*
+!.env.example
+site/
+build/
+*.o
+*.a
+*.user
+.idea/
+.vscode/
+*.swp
+compile_commands.json
