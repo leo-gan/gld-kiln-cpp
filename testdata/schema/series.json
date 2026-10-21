@@ -1,0 +1,12 @@
+{
+  "title": "Series",
+  "type": "object",
+  "properties": {
+    "f32s": {"type": "array", "items": {"type": "number", "format": "float"}},
+    "f64s": {"type": "array", "items": {"type": "number"}},
+    "i32s": {"type": "array", "items": {"type": "integer", "format": "int32"}},
+    "i64s": {"type": "array", "items": {"type": "integer", "format": "int64"}},
+    "u64s": {"type": "array", "items": {"type": "integer", "format": "uint64"}}
+  },
+  "required": ["f32s", "f64s", "i32s", "i64s", "u64s"]
+}

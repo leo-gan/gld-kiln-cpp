@@ -50,6 +50,44 @@ bool unsigned_kind(Kind kind) {
     return kind == Kind::U8 || kind == Kind::U16 || kind == Kind::U32 || kind == Kind::U64 || kind == Kind::Uint;
 }
 
+const char* pod_view_name(Kind kind) {
+    switch (kind) {
+        case Kind::F32:
+            return "f32_view";
+        case Kind::F64:
+            return "f64_view";
+        case Kind::I32:
+            return "i32_view";
+        case Kind::I64:
+        case Kind::Int:
+            return "i64_view";
+        case Kind::U64:
+        case Kind::Uint:
+            return "u64_view";
+        default:
+            return nullptr;
+    }
+}
+
+const char* pod_copy_name(Kind kind) {
+    switch (kind) {
+        case Kind::F32:
+            return "copy_f32s";
+        case Kind::F64:
+            return "copy_f64s";
+        case Kind::I32:
+            return "copy_i32s";
+        case Kind::I64:
+        case Kind::Int:
+            return "copy_i64s";
+        case Kind::U64:
+        case Kind::Uint:
+            return "copy_u64s";
+        default:
+            return nullptr;
+    }
+}
+
 void emit_store(const Schema& schema, const std::string& expr, const std::string& dest, std::vector<std::string>& lines, int& id) {
     if (schema.kind == Kind::Bool) {
         lines.push_back(dest + " = kiln::Value::boolean(" + expr + ");");
@@ -74,17 +112,22 @@ void emit_store(const Schema& schema, const std::string& expr, const std::string
         lines.push_back(dest + " = kiln::Value::null();");
         lines.push_back("}");
     } else if (schema.kind == Kind::List) {
-        const std::string list = "list" + std::to_string(id++);
-        const std::string item = "item" + std::to_string(id++);
-        const std::string inner = "iv" + std::to_string(id++);
-        lines.push_back("kiln::Value::List " + list + ";");
-        lines.push_back(list + ".reserve(" + expr + ".size());");
-        lines.push_back("for (const auto& " + item + " : " + expr + ") {");
-        lines.push_back("kiln::Value " + inner + ";");
-        emit_store(schema.elem[0], item, inner, lines, id);
-        lines.push_back(list + ".push_back(std::move(" + inner + "));");
-        lines.push_back("}");
-        lines.push_back(dest + " = kiln::Value::list(std::move(" + list + "));");
+        const char* view = schema.elem.empty() ? nullptr : pod_view_name(schema.elem[0].kind);
+        if (view != nullptr) {
+            lines.push_back(dest + " = kiln::Value::" + view + "(" + expr + ".data(), " + expr + ".size());");
+        } else {
+            const std::string list = "list" + std::to_string(id++);
+            const std::string item = "item" + std::to_string(id++);
+            const std::string inner = "iv" + std::to_string(id++);
+            lines.push_back("kiln::Value::List " + list + ";");
+            lines.push_back(list + ".reserve(" + expr + ".size());");
+            lines.push_back("for (const auto& " + item + " : " + expr + ") {");
+            lines.push_back("kiln::Value " + inner + ";");
+            emit_store(schema.elem[0], item, inner, lines, id);
+            lines.push_back(list + ".push_back(std::move(" + inner + "));");
+            lines.push_back("}");
+            lines.push_back(dest + " = kiln::Value::list(std::move(" + list + "));");
+        }
     } else if (schema.kind == Kind::Dict) {
         const std::string dict = "dict" + std::to_string(id++);
         const std::string pair = "pair" + std::to_string(id++);
@@ -128,15 +171,20 @@ void emit_load(const Schema& schema, const std::string& src, const std::string& 
         lines.push_back(dest + " = std::move(" + tmp + ");");
         lines.push_back("}");
     } else if (schema.kind == Kind::List) {
-        const std::string item = "el" + std::to_string(id++);
-        const std::string one = "one" + std::to_string(id++);
-        lines.push_back(dest + ".clear();");
-        lines.push_back(dest + ".reserve(" + src + ".as_list().size());");
-        lines.push_back("for (const kiln::Value& " + item + " : " + src + ".as_list()) {");
-        lines.push_back(cpp_type_name(schema.elem[0]) + " " + one + "{};");
-        emit_load(schema.elem[0], item, one, lines, id);
-        lines.push_back(dest + ".push_back(std::move(" + one + "));");
-        lines.push_back("}");
+        const char* copy = schema.elem.empty() ? nullptr : pod_copy_name(schema.elem[0].kind);
+        if (copy != nullptr) {
+            lines.push_back(std::string("kiln::") + copy + "(" + src + ", " + dest + ");");
+        } else {
+            const std::string item = "el" + std::to_string(id++);
+            const std::string one = "one" + std::to_string(id++);
+            lines.push_back(dest + ".clear();");
+            lines.push_back(dest + ".reserve(" + src + ".as_list().size());");
+            lines.push_back("for (const kiln::Value& " + item + " : " + src + ".as_list()) {");
+            lines.push_back(cpp_type_name(schema.elem[0]) + " " + one + "{};");
+            emit_load(schema.elem[0], item, one, lines, id);
+            lines.push_back(dest + ".push_back(std::move(" + one + "));");
+            lines.push_back("}");
+        }
     } else if (schema.kind == Kind::Dict) {
         const std::string pair = "dp" + std::to_string(id++);
         const std::string one = "dv" + std::to_string(id++);

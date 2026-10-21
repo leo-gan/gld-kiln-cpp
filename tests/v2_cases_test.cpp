@@ -4,6 +4,8 @@
 #include "kiln/json.hpp"
 #include "kiln/schema.hpp"
 
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -133,11 +135,112 @@ int run_reference() {
     const kiln::Schema list = kiln::list_of(kiln::scalar(kiln::Kind::F64));
     const auto nan = kiln::test::unhex("020000000000000000000080010000000000f87f");
     const kiln::Value decoded = kiln::decode(list, nan);
-    if ((decoded.as_list()[0].f64_bits() >> 63) == 0 || decoded.as_list()[1].f64_bits() != 0x7ff8000000000001ull) {
+    const auto f64s = decoded.as_f64s();
+    std::uint64_t b0 = 0;
+    std::uint64_t b1 = 0;
+    if (f64s.size() != 2) {
+        return fail("f64", "count");
+    }
+    std::memcpy(&b0, &f64s[0], 8);
+    std::memcpy(&b1, &f64s[1], 8);
+    if ((b0 >> 63) == 0 || b1 != 0x7ff8000000000001ull) {
         return fail("f64", "sign or nan");
     }
     if (kiln::encode(list, decoded) != nan) {
         return fail("f64", "reencode");
+    }
+    std::uint32_t neg0 = 0x80000000u;
+    std::uint32_t qnan = 0x7fc00000u;
+    float neg_f = 0;
+    float nan_f = 0;
+    std::memcpy(&neg_f, &neg0, 4);
+    std::memcpy(&nan_f, &qnan, 4);
+    const float samples[3] = {neg_f, nan_f, 1.5f};
+    const kiln::Schema f32_schema = kiln::list_of(kiln::scalar(kiln::Kind::F32));
+    kiln::Value::List boxed;
+    boxed.push_back(kiln::Value::f32_bits(neg0));
+    boxed.push_back(kiln::Value::f32_bits(qnan));
+    const auto boxed_raw = kiln::encode(f32_schema, kiln::Value::list(std::move(boxed)));
+    if (kiln::test::hex_of(boxed_raw.data(), boxed_raw.size()) != "02000000000000800000c07f") {
+        return fail("f32", "boxed");
+    }
+    const auto f32_raw = kiln::encode(f32_schema, kiln::Value::f32_view(samples, 3));
+    if (f32_raw.size() != 16 || kiln::test::hex_of(f32_raw.data() + 4, 8) != "000000800000c07f") {
+        return fail("f32", "wire");
+    }
+    kiln::Value slot;
+    kiln::decode_into(f32_schema, f32_raw, slot);
+    const float* stable = slot.as_f32s().data();
+    kiln::decode_into(f32_schema, f32_raw, slot);
+    const auto got_f32 = slot.as_f32s();
+    std::uint32_t g0 = 0;
+    std::uint32_t g1 = 0;
+    if (got_f32.size() != 3 || got_f32.data() != stable) {
+        return fail("f32", "reuse");
+    }
+    std::memcpy(&g0, &got_f32[0], 4);
+    std::memcpy(&g1, &got_f32[1], 4);
+    if (g0 != neg0 || g1 != qnan || got_f32[2] != 1.5f) {
+        return fail("f32", "bits");
+    }
+    const std::int32_t i32_in[2] = {-1, 2};
+    const kiln::Schema i32_schema = kiln::list_of(kiln::scalar(kiln::Kind::I32));
+    const auto i32_raw = kiln::encode(i32_schema, kiln::Value::i32_view(i32_in, 2));
+    if (kiln::test::hex_of(i32_raw.data(), i32_raw.size()) != "02000000ffffffff02000000") {
+        return fail("i32", "wire");
+    }
+    if (kiln::decode(i32_schema, i32_raw).as_i32s()[1] != 2) {
+        return fail("i32", "decode");
+    }
+    const std::int64_t i64_in[2] = {-1, 2};
+    try {
+        kiln::encode(i32_schema, kiln::Value::i64_view(i64_in, 2));
+        return fail("i32", "wide");
+    } catch (const kiln::Error& err) {
+        if (std::string(err.code()) != "TYPE") {
+            return fail("i32", err.code());
+        }
+    }
+    const auto i64_raw = kiln::encode(kiln::list_of(kiln::scalar(kiln::Kind::Int)), kiln::Value::i64_view(i64_in, 2));
+    if (i64_raw.size() != 20) {
+        return fail("i64", "width");
+    }
+    kiln::Value::List narrow;
+    narrow.push_back(kiln::Value::i64(-1));
+    narrow.push_back(kiln::Value::i64(2));
+    const auto i8_raw = kiln::encode(kiln::list_of(kiln::scalar(kiln::Kind::I8)), kiln::Value::list(narrow));
+    if (kiln::test::hex_of(i8_raw.data(), i8_raw.size()) != "02000000ff02") {
+        return fail("i8", "wire");
+    }
+    const auto u32_raw = kiln::encode(kiln::list_of(kiln::scalar(kiln::Kind::U32)),
+                                      kiln::Value::list({kiln::Value::u64(1), kiln::Value::u64(2)}));
+    if (u32_raw.size() != 12 || kiln::test::hex_of(u32_raw.data(), u32_raw.size()) != "020000000100000002000000") {
+        return fail("u32", "wire");
+    }
+    const kiln::Schema matrix = kiln::struct_of({
+        {"rows", kiln::scalar(kiln::Kind::I32)},
+        {"cols", kiln::scalar(kiln::Kind::I32)},
+        {"values", kiln::list_of(kiln::scalar(kiln::Kind::F32))},
+    });
+    const auto matrix_raw = kiln::encode(matrix, kiln::Value::dict({
+        {"rows", kiln::Value::i64(1)},
+        {"cols", kiln::Value::i64(3)},
+        {"values", kiln::Value::f32_view(samples, 3)},
+    }));
+    kiln::Value matrix_slot;
+    kiln::decode_into(matrix, matrix_raw, matrix_slot);
+    const float* matrix_ptr = matrix_slot.find("values")->as_f32s().data();
+    kiln::decode_into(matrix, matrix_raw, matrix_slot);
+    if (matrix_slot.find("rows")->as_i64() != 1 || matrix_slot.find("values")->as_f32s().data() != matrix_ptr) {
+        return fail("struct", "reuse");
+    }
+    std::memcpy(&g0, &matrix_slot.find("values")->as_f32s()[0], 4);
+    if (g0 != neg0) {
+        return fail("struct", "negzero");
+    }
+    const kiln::Value copied = matrix_slot;
+    if (copied.find("values")->as_f32s()[2] != 1.5f) {
+        return fail("copy", "f32");
     }
     const kiln::Schema hostile = kiln::list_of(kiln::struct_of({{"a", kiln::scalar(kiln::Kind::I64)}}));
     try {

@@ -126,50 +126,75 @@ void encode_tensors_into(const std::vector<Tensor>& tensors, std::vector<std::ui
             break;
         }
     }
-    if (out.size() != static_cast<std::size_t>(block)) {
-        out.assign(static_cast<std::size_t>(block), 0);
+    if (out.capacity() < static_cast<std::size_t>(block)) {
+        out.reserve(static_cast<std::size_t>(block));
     }
-    std::uint8_t* raw = out.data();
-    if (payload_base != 0) {
-        std::memset(raw, 0, static_cast<std::size_t>(payload_base));
-    }
-    std::memcpy(raw, "KLNT", 4);
-    raw[4] = 2;
-    raw[5] = flags;
-    store_u32(raw + 8, static_cast<std::uint32_t>(count));
-    store_u32(raw + 12, static_cast<std::uint32_t>(heap_size));
-    store_u64(raw + 16, payload);
-    store_u64(raw + 24, directory_bytes);
-    for (std::size_t index = 0; index < prep.size(); ++index) {
-        write_desc(raw + kHeader + index * kDesc, prep[index]);
-    }
-    std::size_t heap_at = static_cast<std::size_t>(kHeader + count * kDesc);
-    auto append = [&](const std::optional<std::string>& text) {
-        if (!text || text->empty()) {
-            return;
+    const auto write_front = [&](std::uint8_t* raw) {
+        if (payload_base != 0) {
+            std::memset(raw, 0, static_cast<std::size_t>(payload_base));
         }
-        std::memcpy(raw + heap_at, text->data(), text->size());
-        heap_at += text->size();
+        std::memcpy(raw, "KLNT", 4);
+        raw[4] = 2;
+        raw[5] = flags;
+        store_u32(raw + 8, static_cast<std::uint32_t>(count));
+        store_u32(raw + 12, static_cast<std::uint32_t>(heap_size));
+        store_u64(raw + 16, payload);
+        store_u64(raw + 24, directory_bytes);
+        for (std::size_t index = 0; index < prep.size(); ++index) {
+            write_desc(raw + kHeader + index * kDesc, prep[index]);
+        }
+        std::size_t heap_at = static_cast<std::size_t>(kHeader + count * kDesc);
+        auto append = [&](const std::optional<std::string>& text) {
+            if (!text || text->empty()) {
+                return;
+            }
+            std::memcpy(raw + heap_at, text->data(), text->size());
+            heap_at += text->size();
+        };
+        for (const Prep& item : prep) {
+            append(item.tensor->name);
+        }
+        for (const Prep& item : prep) {
+            append(item.tensor->layout);
+        }
     };
-    for (const Prep& item : prep) {
-        append(item.tensor->name);
+    const auto write_gaps_and_payload = [&](std::uint8_t* payload_bytes_ptr) {
+        std::uint64_t cursor = 0;
+        for (const Prep& item : prep) {
+            if (item.byte_offset > cursor) {
+                std::memset(payload_bytes_ptr + cursor, 0, static_cast<std::size_t>(item.byte_offset - cursor));
+            }
+            if (item.tensor->data.size != 0) {
+                std::memcpy(payload_bytes_ptr + item.byte_offset, item.tensor->data.data, item.tensor->data.size);
+            }
+            cursor = add_u64(item.byte_offset, item.tensor->data.size);
+        }
+        if (cursor < payload) {
+            std::memset(payload_bytes_ptr + cursor, 0, static_cast<std::size_t>(payload - cursor));
+        }
+    };
+    if (out.size() == static_cast<std::size_t>(block)) {
+        std::uint8_t* raw = out.data();
+        write_front(raw);
+        write_gaps_and_payload(raw + static_cast<std::size_t>(payload_base));
+        return;
     }
-    for (const Prep& item : prep) {
-        append(item.tensor->layout);
-    }
-    std::uint8_t* payload_bytes_ptr = raw + static_cast<std::size_t>(payload_base);
+    // Grow the header only. Payload bytes are copied, not value-initialized first.
+    out.resize(static_cast<std::size_t>(payload_base));
+    write_front(out.data());
     std::uint64_t cursor = 0;
     for (const Prep& item : prep) {
         if (item.byte_offset > cursor) {
-            std::memset(payload_bytes_ptr + cursor, 0, static_cast<std::size_t>(item.byte_offset - cursor));
+            out.insert(out.end(), static_cast<std::size_t>(item.byte_offset - cursor), 0);
         }
         if (item.tensor->data.size != 0) {
-            std::memcpy(payload_bytes_ptr + item.byte_offset, item.tensor->data.data, item.tensor->data.size);
+            const std::uint8_t* bytes = item.tensor->data.data;
+            out.insert(out.end(), bytes, bytes + item.tensor->data.size);
         }
         cursor = add_u64(item.byte_offset, item.tensor->data.size);
     }
     if (cursor < payload) {
-        std::memset(payload_bytes_ptr + cursor, 0, static_cast<std::size_t>(payload - cursor));
+        out.insert(out.end(), static_cast<std::size_t>(payload - cursor), 0);
     }
 }
 

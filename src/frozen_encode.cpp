@@ -1,5 +1,7 @@
 #include "kiln/frozen.hpp"
 
+#include "pod_box.hpp"
+
 #include "kiln/error.hpp"
 
 #include <algorithm>
@@ -76,24 +78,47 @@ void put_unsigned(std::uint8_t* dest, std::uint64_t value, int width) {
 }  // namespace
 
 Writer::Writer(std::size_t capacity) {
-    buf_.resize(capacity == 0 ? 64 : capacity);
+    buf_.reserve(capacity == 0 ? 64 : capacity);
 }
 
 std::uint8_t* Writer::alloc(std::size_t n) {
-    if (n > std::numeric_limits<std::size_t>::max() - end_) {
+    const std::size_t at = buf_.size();
+    if (n > std::numeric_limits<std::size_t>::max() - at) {
         throw Error("LIMIT");
     }
-    const std::size_t need = end_ + n;
-    if (need > buf_.size()) {
-        std::size_t grown = buf_.size() * 2;
+    buf_.resize(at + n);
+    return buf_.data() + at;
+}
+
+void Writer::append_copy(const std::uint8_t* data, std::size_t n) {
+    if (n == 0) {
+        return;
+    }
+    if (data == nullptr) {
+        throw Error("TYPE");
+    }
+    const std::size_t at = buf_.size();
+    if (n > std::numeric_limits<std::size_t>::max() - at) {
+        throw Error("LIMIT");
+    }
+    const std::size_t need = at + n;
+    if (buf_.capacity() < need) {
+        std::size_t grown = buf_.capacity();
+        if (grown > std::numeric_limits<std::size_t>::max() / 2) {
+            grown = need;
+        } else {
+            grown *= 2;
+        }
         if (grown < need) {
             grown = need;
         }
-        buf_.resize(grown);
+        buf_.reserve(grown);
     }
-    std::uint8_t* dest = buf_.data() + end_;
-    end_ += n;
-    return dest;
+    buf_.insert(buf_.end(), data, data + n);
+}
+
+std::vector<std::uint8_t> Writer::release() {
+    return std::move(buf_);
 }
 
 void Writer::write_counted(const std::uint8_t* data, std::size_t n, std::uint64_t cap) {
@@ -102,7 +127,7 @@ void Writer::write_counted(const std::uint8_t* data, std::size_t n, std::uint64_
     }
     store_u32(alloc(4), static_cast<std::uint32_t>(n));
     if (n != 0) {
-        std::memcpy(alloc(n), data, n);
+        append_copy(data, n);
     }
 }
 
@@ -156,6 +181,34 @@ void Writer::write_list(const Schema& elem, const Value& value, std::uint64_t ca
         fit_count(bytes.size(), 1, UINT64_MAX, cap);
         write_counted(bytes.data(), bytes.size(), cap);
         return;
+    }
+    const PodCode code = pod_code(elem.kind);
+    if (code != PodCode::None) {
+        const std::uint8_t* data = nullptr;
+        std::size_t count = 0;
+        if (PodOps::try_view(value, code, data, count)) {
+            const int width = pod_width(code);
+            fit_count(count, static_cast<std::uint64_t>(width), UINT64_MAX, cap);
+            if (count > 0xFFFFFFFFu) {
+                throw Error("LIMIT");
+            }
+            const std::uint64_t bytes = mul_u64(count, static_cast<std::uint64_t>(width));
+            const std::uint64_t total = add_u64(4, bytes);
+            if (total > std::numeric_limits<std::size_t>::max()) {
+                throw Error("LIMIT");
+            }
+            store_u32(alloc(4), static_cast<std::uint32_t>(count));
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+            if (bytes != 0) {
+                append_copy(data, static_cast<std::size_t>(bytes));
+            }
+#else
+            if (bytes != 0) {
+                copy_le_from_host(alloc(static_cast<std::size_t>(bytes)), data, count, width);
+            }
+#endif
+            return;
+        }
     }
     if (value.tag() != Value::Tag::List) {
         throw Error("TYPE");
