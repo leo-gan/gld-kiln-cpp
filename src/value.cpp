@@ -1,5 +1,6 @@
 #include "kiln/value.hpp"
 
+#include "pod_box.hpp"
 #include "pool.hpp"
 
 #include "kiln/error.hpp"
@@ -39,6 +40,9 @@ void Value::clear() noexcept {
         case Tag::Tensors:
             delete as_ptr<TensorDirectory>(ptr_);
             break;
+        case Tag::Pod:
+            PodOps::release(static_cast<PodBox*>(ptr_));
+            break;
         default:
             break;
     }
@@ -74,6 +78,9 @@ Value::Value(const Value& other) : tag_(other.tag_), scalar_(other.scalar_) {
         }
         case Tag::Tensors:
             ptr_ = new TensorDirectory(*static_cast<const TensorDirectory*>(other.ptr_));
+            break;
+        case Tag::Pod:
+            ptr_ = PodOps::clone(static_cast<const PodBox*>(other.ptr_));
             break;
         default:
             ptr_ = nullptr;

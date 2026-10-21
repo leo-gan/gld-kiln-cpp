@@ -79,7 +79,7 @@ void Writer::write_value(const Schema& schema, const Value& value, std::uint64_t
     if (kind == Kind::Tensors) {
         const std::vector<std::uint8_t> raw = encode_tensors(value.as_tensors().tensors);
         if (!raw.empty()) {
-            std::memcpy(alloc(raw.size()), raw.data(), raw.size());
+            append_copy(raw.data(), raw.size());
         }
         return;
     }
@@ -87,13 +87,13 @@ void Writer::write_value(const Schema& schema, const Value& value, std::uint64_t
 }
 
 std::span<const std::uint8_t> Writer::encode(const Schema& schema, const Value& value, std::uint64_t cap) {
-    end_ = 0;
+    buf_.clear();
     write_value(schema, value, cap, 0);
     return bytes();
 }
 
 std::span<const std::uint8_t> Writer::encode_framed(const Schema& schema, const Value& value, std::uint64_t cap) {
-    end_ = 0;
+    buf_.clear();
     std::uint8_t* header = alloc(16);
     std::memcpy(header, "KLN0", 4);
     header[4] = header[5] = header[6] = header[7] = 0;
@@ -104,14 +104,14 @@ std::span<const std::uint8_t> Writer::encode_framed(const Schema& schema, const 
 
 std::vector<std::uint8_t> encode(const Schema& schema, const Value& value, std::uint64_t cap) {
     Writer writer;
-    const auto raw = writer.encode(schema, value, cap);
-    return std::vector<std::uint8_t>(raw.begin(), raw.end());
+    writer.encode(schema, value, cap);
+    return writer.release();
 }
 
 std::vector<std::uint8_t> encode_framed(const Schema& schema, const Value& value, std::uint64_t cap) {
     Writer writer;
-    const auto raw = writer.encode_framed(schema, value, cap);
-    return std::vector<std::uint8_t>(raw.begin(), raw.end());
+    writer.encode_framed(schema, value, cap);
+    return writer.release();
 }
 
 }  // namespace kiln

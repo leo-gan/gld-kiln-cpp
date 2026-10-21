@@ -174,4 +174,61 @@ inline double load_f64(const std::uint8_t* p) {
     return v;
 }
 
+// Host arrays of width 4 or 8 match the wire on a little-endian machine.
+// Big-endian hosts swap each element. Callers must pass the real element width:
+// f32 and i32 are 4 bytes; f64, i64, int, u64, and uint are 8. u32 is not 8.
+inline void copy_le_from_host(std::uint8_t* dest, const void* src, std::size_t count, int width) {
+    if (count == 0) {
+        return;
+    }
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    std::memcpy(dest, src, count * static_cast<std::size_t>(width));
+#else
+    const auto* in = static_cast<const std::uint8_t*>(src);
+    if (width == 4) {
+        for (std::size_t i = 0; i < count; ++i) {
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, in + i * 4, 4);
+            store_u32(dest + i * 4, bits);
+        }
+        return;
+    }
+    if (width == 8) {
+        for (std::size_t i = 0; i < count; ++i) {
+            std::uint64_t bits = 0;
+            std::memcpy(&bits, in + i * 8, 8);
+            store_u64(dest + i * 8, bits);
+        }
+        return;
+    }
+    throw Error("TYPE");
+#endif
+}
+
+inline void copy_le_to_host(void* dest, const std::uint8_t* src, std::size_t count, int width) {
+    if (count == 0) {
+        return;
+    }
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    std::memcpy(dest, src, count * static_cast<std::size_t>(width));
+#else
+    auto* out = static_cast<std::uint8_t*>(dest);
+    if (width == 4) {
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::uint32_t bits = load_u32(src + i * 4);
+            std::memcpy(out + i * 4, &bits, 4);
+        }
+        return;
+    }
+    if (width == 8) {
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::uint64_t bits = load_u64(src + i * 8);
+            std::memcpy(out + i * 8, &bits, 8);
+        }
+        return;
+    }
+    throw Error("TYPE");
+#endif
+}
+
 }  // namespace kiln

@@ -19,6 +19,17 @@ kiln::Value back = kiln::decode(point, raw);
 
 `back` is the struct value and `raw.size()` is 8.
 
+A long `f32` list is a count plus the raw bits. `decode_into` reuses `slot` on the next call.
+
+```cpp
+std::vector<float> samples = {1.0f, -2.0f};
+kiln::Schema series = kiln::list_of(kiln::scalar(kiln::Kind::F32));
+kiln::Writer batch(64);
+auto bytes = batch.encode(series, kiln::Value::f32_view(samples.data(), samples.size()));
+kiln::Value slot;
+kiln::decode_into(series, bytes, slot);
+```
+
 A tensor directory keeps the numeric payload as the array. The view's `data` field is a slice of the input buffer.
 
 ```cpp

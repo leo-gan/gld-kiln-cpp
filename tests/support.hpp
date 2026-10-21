@@ -178,6 +178,46 @@ inline json::Value project(const Value& value) {
         }
         case Value::Tag::Tensors:
             return project_directory(value.as_tensors());
+        case Value::Tag::Pod: {
+            json::Value out;
+            out.type = json::Value::Type::Array;
+            switch (value.pod_kind()) {
+                case PodKind::F32:
+                    for (float item : value.as_f32s()) {
+                        json::Value number;
+                        number.type = json::Value::Type::Number;
+                        number.d = static_cast<double>(item);
+                        out.a.push_back(std::move(number));
+                    }
+                    break;
+                case PodKind::F64:
+                    for (double item : value.as_f64s()) {
+                        json::Value number;
+                        number.type = json::Value::Type::Number;
+                        number.d = item;
+                        out.a.push_back(std::move(number));
+                    }
+                    break;
+                case PodKind::I32:
+                    for (std::int32_t item : value.as_i32s()) {
+                        out.a.push_back(number_i(item));
+                    }
+                    break;
+                case PodKind::I64:
+                    for (std::int64_t item : value.as_i64s()) {
+                        out.a.push_back(number_i(item));
+                    }
+                    break;
+                case PodKind::U64:
+                    for (std::uint64_t item : value.as_u64s()) {
+                        out.a.push_back(number_u(item));
+                    }
+                    break;
+                case PodKind::None:
+                    break;
+            }
+            return out;
+        }
         default: {
             json::Value out;
             out.type = json::Value::Type::Null;

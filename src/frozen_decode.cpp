@@ -1,8 +1,12 @@
 #include "kiln/frozen.hpp"
 
+#include "pod_box.hpp"
+
 #include "kiln/error.hpp"
 
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -31,6 +35,28 @@ const Schema& inner_of(const Schema& schema) {
 }
 
 Value read_value(Cursor& cursor, const Schema& schema, int depth);
+void read_struct(Cursor& cursor, const Schema& schema, int depth, Value& out);
+
+void read_pod_elems(Cursor& cursor, Kind kind, Value& slot) {
+    const PodCode code = pod_code(kind);
+    if (code == PodCode::None) {
+        throw Error("TYPE");
+    }
+    cursor.need(4);
+    const std::uint32_t count = load_u32(cursor.p + cursor.i);
+    const std::uint64_t unread = cursor.n - (cursor.i + 4);
+    const int width = pod_width(code);
+    fit_count(count, static_cast<std::uint64_t>(width), unread, cursor.cap);
+    cursor.i += 4;
+    const std::uint64_t bytes = mul_u64(count, static_cast<std::uint64_t>(width));
+    if (bytes > std::numeric_limits<std::size_t>::max()) {
+        throw Error("LIMIT");
+    }
+    cursor.need(static_cast<std::size_t>(bytes));
+    const std::uint8_t* src = bytes == 0 ? nullptr : cursor.p + cursor.i;
+    PodOps::fill(slot, code, src, count);
+    cursor.i += static_cast<std::size_t>(bytes);
+}
 
 Value read_inline(Cursor& cursor, Kind kind, std::uint64_t cap, bool trusted) {
     const int width = scalar_width(kind);
@@ -103,6 +129,12 @@ Value read_inline(Cursor& cursor, Kind kind, std::uint64_t cap, bool trusted) {
 }
 
 Value read_list(Cursor& cursor, const Schema& elem, int depth) {
+    (void)depth;
+    if (pod_code(elem.kind) != PodCode::None) {
+        Value slot;
+        read_pod_elems(cursor, elem.kind, slot);
+        return slot;
+    }
     cursor.need(4);
     const std::uint32_t count = load_u32(cursor.p + cursor.i);
     const std::uint64_t unread = cursor.n - (cursor.i + 4);
@@ -191,23 +223,7 @@ Value read_value(Cursor& cursor, const Schema& schema, int depth) {
     }
     if (kind == Kind::Struct) {
         Value out;
-        Value::Dict& fields = out.scratch_dict();
-        const std::size_t count = schema.fields.size();
-        bool reuse = fields.size() == count;
-        for (std::size_t index = 0; reuse && index < count; ++index) {
-            reuse = fields[index].first == schema.fields[index].first;
-        }
-        if (!reuse) {
-            fields.clear();
-            if (fields.capacity() < count) fields.reserve(count);
-        }
-        for (std::size_t index = 0; index < count; ++index) {
-            const Schema& field = schema.fields[index].second;
-            Value item = scalar_width(field.kind) > 0 ? read_inline(cursor, field.kind, cursor.cap, cursor.trusted)
-                                                       : read_value(cursor, field, depth + 1);
-            if (reuse) fields[index].second = std::move(item);
-            else fields.emplace_back(schema.fields[index].first, std::move(item));
-        }
+        read_struct(cursor, schema, depth, out);
         return out;
     }
     if (kind == Kind::Tensors) {
@@ -219,6 +235,57 @@ Value read_value(Cursor& cursor, const Schema& schema, int depth) {
     return read_inline(cursor, kind, cursor.cap, cursor.trusted);
 }
 
+void read_struct(Cursor& cursor, const Schema& schema, int depth, Value& out) {
+    Value::Dict& fields = out.scratch_dict();
+    const std::size_t count = schema.fields.size();
+    bool reuse = fields.size() == count;
+    for (std::size_t index = 0; reuse && index < count; ++index) {
+        reuse = fields[index].first == schema.fields[index].first;
+    }
+    if (!reuse) {
+        fields.clear();
+        if (fields.capacity() < count) {
+            fields.reserve(count);
+        }
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        const Schema& field = schema.fields[index].second;
+        if (field.kind == Kind::List && !field.elem.empty() && pod_code(field.elem[0].kind) != PodCode::None) {
+            if (!reuse) {
+                fields.emplace_back(schema.fields[index].first, Value());
+            }
+            read_pod_elems(cursor, field.elem[0].kind, fields[index].second);
+            continue;
+        }
+        Value item = scalar_width(field.kind) > 0 ? read_inline(cursor, field.kind, cursor.cap, cursor.trusted)
+                                                   : read_value(cursor, field, depth + 1);
+        if (reuse) {
+            fields[index].second = std::move(item);
+        } else {
+            fields.emplace_back(schema.fields[index].first, std::move(item));
+        }
+    }
+}
+
+void read_into(Cursor& cursor, const Schema& schema, int depth, Value& slot) {
+    if (depth > kMaxDepth) {
+        throw Error("LIMIT");
+    }
+    if (schema.kind == Kind::List) {
+        if (!schema.elem.empty() && pod_code(schema.elem[0].kind) != PodCode::None) {
+            read_pod_elems(cursor, schema.elem[0].kind, slot);
+            return;
+        }
+        slot = read_list(cursor, inner_of(schema), depth);
+        return;
+    }
+    if (schema.kind == Kind::Struct) {
+        read_struct(cursor, schema, depth, slot);
+        return;
+    }
+    slot = read_value(cursor, schema, depth);
+}
+
 }  // namespace
 
 Value decode(const Schema& schema, std::span<const std::uint8_t> buf, const ReadOpts& opts) {
@@ -228,6 +295,14 @@ Value decode(const Schema& schema, std::span<const std::uint8_t> buf, const Read
         throw Error("TRAILING");
     }
     return value;
+}
+
+void decode_into(const Schema& schema, std::span<const std::uint8_t> buf, Value& out, const ReadOpts& opts) {
+    Cursor cursor{buf.data(), buf.size(), 0, opts.cap, opts.trusted};
+    read_into(cursor, schema, 0, out);
+    if (opts.standalone && cursor.i != cursor.n) {
+        throw Error("TRAILING");
+    }
 }
 
 Value decode_framed(const Schema& schema, std::span<const std::uint8_t> buf, const ReadOpts& opts) {
