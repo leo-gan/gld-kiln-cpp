@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kiln/codegen.hpp"
+#include "kiln/cursor.hpp"
 #include "kiln/error.hpp"
 #include "kiln/frozen.hpp"
 #include "kiln/json.hpp"

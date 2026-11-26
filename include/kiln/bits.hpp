@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <cstring>
 #include <string_view>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace kiln {
 
@@ -48,6 +51,23 @@ inline void fit_count(std::uint64_t count, std::uint64_t each, std::uint64_t unr
 
 inline bool utf8_ok(const std::uint8_t* s, std::size_t n) {
     std::size_t i = 0;
+#if defined(__SSE2__)
+    while (i + 16 <= n) {
+        const __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + i));
+        if (_mm_movemask_epi8(chunk) != 0) {
+            break;
+        }
+        i += 16;
+    }
+#endif
+    while (i + 8 <= n) {
+        std::uint64_t word = 0;
+        std::memcpy(&word, s + i, 8);
+        if ((word & 0x8080808080808080ULL) != 0) {
+            break;
+        }
+        i += 8;
+    }
     while (i < n) {
         const std::uint8_t c = s[i];
         if (c <= 0x7F) {

@@ -58,8 +58,11 @@ void Writer::write_value(const Schema& schema, const Value& value, std::uint64_t
         if (value.tag() != Value::Tag::Dict) {
             throw Error("TYPE");
         }
-        for (const auto& field : schema.fields) {
-            const Value* item = value.find(field.first);
+        const auto& entries = value.as_dict();
+        for (std::size_t idx = 0; idx < schema.fields.size(); ++idx) {
+            const auto& field = schema.fields[idx];
+            const Value* item =
+                (idx < entries.size() && entries[idx].first == field.first) ? &entries[idx].second : value.find(field.first);
             if (item == nullptr) {
                 throw Error("TYPE");
             }
