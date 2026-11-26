@@ -1,5 +1,6 @@
 #include "support.hpp"
 
+#include "kiln/cursor.hpp"
 #include "kiln/frozen.hpp"
 #include "kiln/json.hpp"
 #include "kiln/schema.hpp"
@@ -264,6 +265,46 @@ int run_reference() {
     trusted.trusted = true;
     if (kiln::decode(text, kiln::test::unhex("01000000ff"), trusted).as_str() != "\xff") {
         return fail("trusted", "utf8");
+    }
+    // Verify fast ASCII-first utf8_ok and ByteWriter/ByteReader round-trip.
+    for (std::size_t len = 0; len <= 40; ++len) {
+        std::string ascii(len, 'a');
+        if (!kiln::utf8_ok(ascii)) {
+            return fail("utf8_ok", "valid ascii");
+        }
+        if (len > 0) {
+            for (std::size_t bad = 0; bad < len; ++bad) {
+                std::string invalid = ascii;
+                invalid[bad] = static_cast<char>(0xFF);
+                if (kiln::utf8_ok(invalid)) {
+                    return fail("utf8_ok", "accepted invalid byte");
+                }
+            }
+        }
+    }
+    {
+        const std::vector<double> vals = {1.5, -0.0, 42.25};
+        const std::string label = "0123456789abcdef-utf8-\xC3\xA9";
+        const std::size_t need = 1 + 4 + 8 + kiln::wire_str_size(label) + kiln::wire_pod_size(vals.size(), 8);
+        std::vector<std::uint8_t> buf(need);
+        kiln::ByteWriter bw(buf.data());
+        bw.put_bool(true);
+        bw.put_i32(-7);
+        bw.put_i64(9000000000LL);
+        bw.put_str(label);
+        bw.put_pod(vals);
+        if (bw.written() != need) {
+            return fail("cursor", "size");
+        }
+        kiln::ByteReader br(buf);
+        if (!br.boolean() || br.i32() != -7 || br.i64() != 9000000000LL || br.str() != label) {
+            return fail("cursor", "fields");
+        }
+        std::vector<double> back = br.read_pod<double>();
+        br.finish();
+        if (back.size() != vals.size() || back[0] != 1.5 || back[2] != 42.25) {
+            return fail("cursor", "pod");
+        }
     }
     std::cout << "reference ok\n";
     return 0;
